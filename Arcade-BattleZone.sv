@@ -216,6 +216,7 @@ assign AUDIO_MIX = 0;
 //   30:29    Dot scale      (only meaningful with the profile Off)
 //   32:31    Phosphor decay (only meaningful with the profile Off)
 //   33       Direct video scan rate
+//   34       Debug overlay (bring-up diagnostics)
 //
 localparam CONF_STR = {
 	"A.BATTLEZONE;;",
@@ -228,6 +229,8 @@ localparam CONF_STR = {
 	"h7OVW,Phosphor Decay,Off,Short,Medium,Long;",
 	"-;",
 	"h8OK,Overlay,On,Off;",
+	"-;",
+	"OY,Debug Overlay,Off,On;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -688,23 +691,28 @@ assign VIDEO_ARY = (ar == 2'd0) ? auto_ary : (ar == 2'd1) ? 13'd0 : (13'h1000 | 
 //
 // AVG coordinate scaling.
 //
-// STARTING POINT ONLY -- these constants are inherited from Black Widow and
-// have not yet been measured against Battlezone's actual visible extent
-// (HANDOFF.md open question 2). Expect to retune after looking at hardware.
+// Measured against the pre-rework 640x480 output, which is the reference for
+// Battlezone's proportions. The constants inherited from Black Widow rendered
+// the image uniformly 1.34x too large about the centre -- the horizon sat
+// correctly at mid-screen but the mountains clipped at both edges. Comparing
+// the isolated "(c) ATARI 1980" line gave a width ratio of 1.342 and a height
+// ratio of 1.278 (the latter coarse, 12 px vs 23 px), i.e. one uniform
+// overscale rather than an aspect error, so every constant is divided by 1.34
+// and normalised onto a >>>10 shift.
 //
 always @(*) begin
 	if (is_1080p) begin
-		x_scaled = (avg_x_ext * 22'sd49) >>> 9;
-		y_scaled = (avg_y_ext * 22'sd39) >>> 9;
+		x_scaled = (avg_x_ext * 22'sd73) >>> 10;
+		y_scaled = (avg_y_ext * 22'sd58) >>> 10;
 	end else if (is_240p) begin
-		x_scaled = (avg_x_ext * 22'sd43) >>> 10;
-		y_scaled = (avg_y_ext * 22'sd35) >>> 11;
+		x_scaled = (avg_x_ext * 22'sd32) >>> 10;
+		y_scaled = (avg_y_ext * 22'sd13) >>> 10;
 	end else if (is_480p) begin
-		x_scaled = (avg_x_ext * 22'sd43) >>> 10;
-		y_scaled = (avg_y_ext * 22'sd35) >>> 10;
+		x_scaled = (avg_x_ext * 22'sd32) >>> 10;
+		y_scaled = (avg_y_ext * 22'sd26) >>> 10;
 	end else begin
-		x_scaled = (avg_x_ext * 22'sd65) >>> 10;
-		y_scaled = (avg_y_ext * 22'sd13) >>> 8;
+		x_scaled = (avg_x_ext * 22'sd48) >>> 10;
+		y_scaled = (avg_y_ext * 22'sd39) >>> 10;
 	end
 end
 
@@ -985,7 +993,8 @@ wire [15:0] dbg_bits = {
 	4'b1010
 };
 
-wire        dbg_row   = (disp_y >= 11'd100) && (disp_y < 11'd140);
+wire        dbg_on    = status[34];
+wire        dbg_row   = dbg_on && (disp_y >= 11'd100) && (disp_y < 11'd140);
 wire [10:0] dbg_col   = disp_x - 11'd40;
 wire        dbg_in    = dbg_row && (disp_x >= 11'd40) && (dbg_col < 11'd512);
 wire  [3:0] dbg_idx   = dbg_col[8:5];
