@@ -356,40 +356,45 @@ end
 // input is present: ramp toward the extreme while held, spring back to centre
 // when released, which is what the real stick does.
 //
-localparam RB_RATE = 12'd1500;   // ~8 clk_12 ticks per LSB -> ~0.2 s end to end
+// MAME constrains Red Baron's stick to 0x40..0xbf, i.e. centre 128 +/- 63, so
+// match that range rather than driving the full 0..255.
+localparam signed [7:0] RB_LIMIT = 8'sd63;
+localparam RB_RATE = 12'd3000;   // ~0.25 s from centre to full deflection
 
-wire signed [8:0] joya_x = $signed({joya[15:8], 1'b0}) >>> 1;
-wire signed [8:0] joya_y = $signed({joya[7:0],  1'b0}) >>> 1;
+wire signed [7:0] joya_x = $signed(joya[15:8]) >>> 1;
+wire signed [7:0] joya_y = $signed(joya[7:0])  >>> 1;
 wire analog_active = (joya[15:8] != 8'd0) || (joya[7:0] != 8'd0);
 
-reg  [11:0] rb_tick = 0;
-reg signed [8:0] rb_x = 0;
-reg signed [8:0] rb_y = 0;
+reg [11:0] rb_tick = 0;
+reg signed [7:0] rb_x = 0;
+reg signed [7:0] rb_y = 0;
 wire rb_step = (rb_tick == RB_RATE);
 
 always @(posedge clk_12) begin
 	rb_tick <= rb_step ? 12'd0 : rb_tick + 12'd1;
 	if (rb_step) begin
 		// X: joy[0] right, joy[1] left
-		if (joy[0] && !joy[1])       rb_x <= (rb_x < $signed(9'sd127))  ? rb_x + 9'sd1 : rb_x;
-		else if (joy[1] && !joy[0])  rb_x <= (rb_x > $signed(-9'sd127)) ? rb_x - 9'sd1 : rb_x;
-		else if (rb_x > 0)           rb_x <= rb_x - 9'sd1;
-		else if (rb_x < 0)           rb_x <= rb_x + 9'sd1;
+		if (joy[0] && !joy[1])       rb_x <= (rb_x <  RB_LIMIT) ? rb_x + 8'sd1 : rb_x;
+		else if (joy[1] && !joy[0])  rb_x <= (rb_x > -RB_LIMIT) ? rb_x - 8'sd1 : rb_x;
+		else if (rb_x > 0)           rb_x <= rb_x - 8'sd1;
+		else if (rb_x < 0)           rb_x <= rb_x + 8'sd1;
 
 		// Y: joy[3] up, joy[2] down
-		if (joy[3] && !joy[2])       rb_y <= (rb_y < $signed(9'sd127))  ? rb_y + 9'sd1 : rb_y;
-		else if (joy[2] && !joy[3])  rb_y <= (rb_y > $signed(-9'sd127)) ? rb_y - 9'sd1 : rb_y;
-		else if (rb_y > 0)           rb_y <= rb_y - 9'sd1;
-		else if (rb_y < 0)           rb_y <= rb_y + 9'sd1;
+		if (joy[3] && !joy[2])       rb_y <= (rb_y <  RB_LIMIT) ? rb_y + 8'sd1 : rb_y;
+		else if (joy[2] && !joy[3])  rb_y <= (rb_y > -RB_LIMIT) ? rb_y - 8'sd1 : rb_y;
+		else if (rb_y > 0)           rb_y <= rb_y - 8'sd1;
+		else if (rb_y < 0)           rb_y <= rb_y + 8'sd1;
 	end
 end
 
-wire signed [8:0] rb_axis_x = analog_active ? joya_x : rb_x;
-wire signed [8:0] rb_axis_y = analog_active ? joya_y : rb_y;
+wire signed [7:0] rb_axis_x = analog_active ? joya_x : rb_x;
+wire signed [7:0] rb_axis_y = analog_active ? joya_y : rb_y;
 
-// POKEY pot lines are unsigned, centred at 128.
-wire [7:0] rb_pot_x = 8'd128 + rb_axis_x[7:0];
-wire [7:0] rb_pot_y = 8'd128 + rb_axis_y[7:0];
+// POKEY pot lines are unsigned, centred at 128. POTGO snapshots these into
+// ALLPOT (POKEY.sv:176) and the game reads them back at $8 -- the same model
+// MAME uses, where Red Baron overrides allpot_r() to return the stick value.
+wire [7:0] rb_pot_x = 8'd128 + rb_axis_x;
+wire [7:0] rb_pot_y = 8'd128 + rb_axis_y;
 
 wire [7:0] JB;
 wire [7:0] arcadebuttons;
@@ -435,7 +440,11 @@ wire        avg_is_dot;
 wire        avg_halted;
 
 assign AUDIO_R = AUDIO_L;
-assign AUDIO_S = 1;
+// Unsigned is correct despite ASSESSMENT.md 5.1 flagging it: audio_output.sv:70
+// sums pokey_filtered (4-bit POKEY zero-padded into bits 13:10) with
+// analog_audio, both non-negative, so the result never goes below zero. The
+// signed accumulator inside iir.sv is an implementation detail of the filter.
+assign AUDIO_S = 0;
 
 top bzonetop(
   .clk_12(clk_12),

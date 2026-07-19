@@ -32,6 +32,8 @@ architecture Behavioral of vecmem_bz is
     signal wraddr : STD_LOGIC_VECTOR(12 downto 0);
     signal wrdata : STD_LOGIC_VECTOR(7 downto 0);
     signal wren   : STD_LOGIC;
+
+    signal q0 : STD_LOGIC_VECTOR(7 downto 0);
 begin
     -- Download offset $4000-$4FFF holds the two 2K vector ROMs; they land in
     -- the upper half of the window so the CPU sees them at $3000.
@@ -41,12 +43,17 @@ begin
     wrdata <= dn_data                       when dn_sel = '1' else data_in;
     wren   <= dn_wr                         when dn_sel = '1' else we;
 
+    -- Two-cycle read latency, matching Black Widow's ram_2k (which sets
+    -- outdata_reg_a => "CLOCK0") and its vecrom_dout_q. The AVG wrapper's
+    -- address tag pipeline is two deep, so a one-cycle memory would assert
+    -- avg_data_valid a cycle before the data actually arrived.
     process (clk) begin
         if rising_edge(clk) then
             if wren = '1' then
                 mem(conv_integer(wraddr)) <= wrdata;
             end if;
-            data_out <= mem(conv_integer(addr));
+            q0       <= mem(conv_integer(addr));
+            data_out <= q0;
         end if;
     end process;
 end Behavioral;

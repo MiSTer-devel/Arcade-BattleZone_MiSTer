@@ -336,10 +336,19 @@ unused.
 | `dl_addr` / `dl_data` / `dl_wr` cross `clk_25` → `clk_50` **unsynchronized**. Works only because ROM loading is slow; formally unsound and liable to break on a re-fit | `Arcade-BattleZone.sv:260` vs `:390` |
 | Copy-paste bug: assigns `counter12KHz` twice, never resets `counter48KHz` (in the unused `CLK_DIV=="FALSE"` branch) | `rtl/top.sv:160-161` |
 | `forced_scandoubler` and `fx` **hardcoded to 0** despite `forced_scandoubler` being wired out of `hps_io` at `:265` — OSD scanline options do nothing | `Arcade-BattleZone.sv:379-380` |
-| `AUDIO_S = 0` (unsigned) while the mixer sums signed IIR output — likely DC/polarity issue | `Arcade-BattleZone.sv:387` |
+| ~~`AUDIO_S = 0` (unsigned) while the mixer sums signed IIR output~~ — **not a defect**, see below | `Arcade-BattleZone.sv:387` |
 | H_PULSE is 95, should be 96 | `rtl/VGA_fsm.sv:30-37` |
 | Blocking assignments inside a clocked `always @(posedge clk_50)` block | `Arcade-BattleZone.sv:284-296` |
 | `retValid` computed but never used — stack underflow/overflow silently wraps | `rtl/avg.sv:292` |
+
+> **`AUDIO_S` corrected on revision.** Reading the mixer rather than inferring from
+> the IIR's signed accumulator: `rtl/audio_output.sv:70` computes
+> `out_unfiltered <= pokey_filtered + analog_audio`. `pokey_filtered` is POKEY's
+> 4-bit output zero-padded into bits 13:10 (`:47`), and `analog_audio` is the sum
+> of unsigned generator outputs (`rtl/analog_sound.sv:84-88`). Both are
+> non-negative, so the mix never goes below zero and **unsigned is correct**. The
+> `signed` accumulator inside `rtl/iir.sv` is internal to the leaky integrator and
+> does not make the output bipolar. No change needed.
 
 ### 5.2 Dead code and debris
 
