@@ -165,18 +165,29 @@ module addrDecoder
         dataToBram[bramNum] = dataFromCore;
         addrToBram[bramNum] = addr;
 
-        if(outBramNum < 5) begin
-            dataToCore = dataFromBram[outBramNum];
+        // Read data must be valid for the address the CPU is presenting NOW.
+        //
+        // This mux used to be driven from outBramNum/outBramAddr, which are
+        // registered on the CPU enable and therefore describe the *previous*
+        // cycle's address. That suited Arlet Ottens' 6502, which has a
+        // registered address bus (ABL/ABH plus DIHOLD) and presents the address
+        // a cycle ahead. T65 does not: it expects DI to be valid within the
+        // same enabled cycle, which is why Black Widow's equivalent mux
+        // (bwidow.vhd:218-247) is combinational. At 8 clk_12 per CPU cycle the
+        // BRAM outputs settle several cycles before the next enable, so reading
+        // them combinationally is safe.
+        if(bramNum < 5) begin
+            dataToCore = dataFromBram[bramNum];
         end
         else begin
-            case(outBramAddr)
+            case(addr)
                 16'h800: dataToCore = {clk_3KHz, halt, 1'b1, self_test, 2'b11,1'b1, coin};
                 16'h1802: dataToCore = REDBARONBUTTONS;
                 16'ha00: dataToCore = DSW0;//dataToCore = 8'b0001_0101;
                 16'hc00: dataToCore = DSW1;
                 //16'h1800: dataToCore = 8'b11111111;
                 default: begin
-                    if(outBramAddr != 16'h1400) unmappedAccess = 1;
+                    if(addr != 16'h1400) unmappedAccess = 1;
                     if(~we) unmappedRead = 1'b1;
                     dataToCore = 8'd0;
                 end

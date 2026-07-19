@@ -98,38 +98,46 @@ module top
 
   assign clk_3KHz = cnt_3khz[8];
 
+  // The divider must FREE-RUN, exactly as Black Widow's does (bwidow.vhd:280).
+  // avg_prom_core only acts inside "if clken='1'", so gating the enable with
+  // reset means vgrst is never sampled and halt_flag never gets set -- it powers
+  // up at 0, i.e. "running", and the AVG executes garbage from pc=0. It also
+  // starves T65's reset, which needs several *enabled* cycles with Res_n low.
   always @(posedge clk_12) begin
+    clkdiv   <= clkdiv + 3'd1;
+    ena_1_5M <= (clkdiv == 3'd0);
+
     if (rst) begin
-      clkdiv   <= '0;
-      ena_1_5M <= 1'b0;
       cnt_3khz <= '0;
       nmi_div  <= '0;
       NMI      <= 1'b0;
-    end else begin
-      clkdiv <= clkdiv + 3'd1;
-      if (clkdiv == 3'd0) begin
-        ena_1_5M <= 1'b1;
-        cnt_3khz <= cnt_3khz + 9'd1;
-        if (cnt_3khz == 9'd0) begin
-          // 1.512 MHz / 512 = 2953 Hz tick; /12 = 246 Hz NMI.
-          if (nmi_div == 4'd11) begin
-            nmi_div <= 4'd0;
-            NMI     <= 1'b1;
-          end else begin
-            nmi_div <= nmi_div + 4'd1;
-            NMI     <= 1'b0;
-          end
+    end else if (clkdiv == 3'd0) begin
+      cnt_3khz <= cnt_3khz + 9'd1;
+      if (cnt_3khz == 9'd0) begin
+        // 1.512 MHz / 512 = 2953 Hz tick; /12 = 246 Hz NMI.
+        if (nmi_div == 4'd11) begin
+          nmi_div <= 4'd0;
+          NMI     <= 1'b1;
+        end else begin
+          nmi_div <= nmi_div + 4'd1;
+          NMI     <= 1'b0;
         end
-      end else begin
-        ena_1_5M <= 1'b0;
       end
     end
   end
 
-  logic coreReset_l;
+  // Hold the CPU in reset for 256 enabled cycles after rst releases, matching
+  // the 256-cycle stretcher in bwidow_top.vhd:104-118.
+  logic [7:0] rst_cnt;
+  logic       coreReset_l;
   always_ff @(posedge clk_12) begin
-    if (rst)             coreReset_l <= 1'b0;
-    else if (ena_1_5M)   coreReset_l <= 1'b1;
+    if (rst) begin
+      rst_cnt     <= 8'd0;
+      coreReset_l <= 1'b0;
+    end else if (ena_1_5M) begin
+      if (rst_cnt == 8'hFF) coreReset_l <= 1'b1;
+      else                  rst_cnt     <= rst_cnt + 8'd1;
+    end
   end
 
   //--------------------------------------------------------------------------
