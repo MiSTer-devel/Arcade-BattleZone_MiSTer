@@ -47,6 +47,64 @@ correct, since the display list decodes into recognisable Battlezone.
 
 ---
 
+## GitHub issues addressed
+
+Both open issues on the repo are resolved by this branch. **Neither has been commented
+on or closed** — do that when the branch merges.
+
+### #5 "Clocks" (smdjeff, 2025-10-11) — fixed
+
+Both points in the report were correct.
+
+1. **Typo at `rtl/top.sv:161`.** `counter12KHz <= 'd1024;` where `counter48KHz` was
+   meant, so `counter48KHz` was never reset. It sat in the `CLK_DIV == "FALSE"` generate
+   branch, which was never instantiated. Fixed **by deleting that branch** rather than
+   correcting it in place — if anyone ever wants a 100 MHz variant back, it is gone.
+2. **"Shouldn't the CPU be running at 1.5MHz?"** Yes. It was 50/16 = 3.125 MHz on Arlet's
+   non-cycle-accurate 6502. Now T65 at 12.096 MHz with a 1.512 MHz clock enable, the
+   documented rate. This is the point that forced the CPU swap: correcting the divider
+   alone would have halved game speed, which is exactly what the original Open Question 1
+   worried about.
+
+The NMI also moved from a magic `nmi_counter == 12` wrap at ~218 Hz to a real 3 kHz/12
+divide.
+
+### #3 "Red Baron (Revised Hardware) Boots to a black screen" (TheJesusFish, 2025-06-22) — fixed
+
+**Not a core bug** — a malformed MRA, which is why the reporter's re-download of ROM,
+MRA and core changed nothing.
+
+`037587-01.fh1` is a 4K chip holding two 2K ROMs that map to **non-contiguous** CPU
+addresses. The MRA emitted the whole 4K *twice* instead of half each time, so the program
+region totalled 18432 bytes, overflowed `0x4000`, displaced the vector ROMs to `0x5000`
+and scrambled the program map.
+
+Layout derived from the ROM data, not guessed — the first attempt (just removing the
+duplicate line) still produced a black screen:
+
+```
+037587-01.fh1[0x000:0x800]  == 037001-01e.e1  (crc b9486a6a)  -> CPU $4800
+037000-01.e1                                                   -> CPU $5000
+037587-01.fh1[0x800:0x1000] == 036999-01e.j1  (crc 48d49819)  -> CPU $5800
+036998-01.j1 / 036997-01.k1 / 036996-01.lm1                   -> $6000/$6800/$7000
+036995-01.n1                                                   -> CPU $7800
+```
+
+`036995-01.n1` is identifiable as the top ROM because it carries the reset vector
+(`RST=7AA5`); the others hold nonsense in those bytes. The revised set turns out to be
+**byte-identical** to the older one, just packaged with two ROMs merged onto one chip, so
+the correct layout matches `Red Baron.mra` exactly.
+
+Fixed with `offset`/`length` attributes on the split part. Added here as
+`releases/Red Baron (Revised Hardware).mra` and verified booting on hardware.
+
+> **Upstream caveat:** the broken file lives in the MiSTer **arcade MRA collection**
+> (`_Arcade/_alternatives/_Red Baron/Red Baron (Revised Hardware) [Doesn't Work Yet].mra`),
+> not in this repo. The copy added here fixes it for anyone using this repo, but the MRA
+> collection needs the same change for everyone else.
+
+---
+
 ## Revision note — read this first
 
 The first draft of this document compared BattleZone against `Arcade-StarWars_MiSTer`
