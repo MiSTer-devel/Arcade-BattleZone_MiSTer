@@ -47,3 +47,6 @@ spice/output.*
 ./spice/history
 .idea
 spice/.ipynb_checkpoints/
+
+# ROM zips used for verification, not for distribution
+*.zip
