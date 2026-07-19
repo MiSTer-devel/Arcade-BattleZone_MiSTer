@@ -43,6 +43,12 @@ module top
    output logic        avg_halted,
 
    output logic [15:0] audio,
+
+   // Bring-up diagnostics, see the debug overlay in Arcade-BattleZone.sv
+   output logic        dbg_vggo,
+   output logic        dbg_vgrst,
+   output logic [15:0] dbg_cpu_addr,
+
    input wire [24:0]   dl_addr,
    input wire [7:0]    dl_data,
    input wire          dl_wr,
@@ -218,6 +224,10 @@ module top
   // copies of it that were written in parallel and could drift apart.
   //--------------------------------------------------------------------------
   wire vec_cs_l = ~(address[14:13] == 2'b01);   // CPU $2000-$3FFF
+
+  assign dbg_vggo     = vggo;
+  assign dbg_vgrst    = vgrst;
+  assign dbg_cpu_addr = address;
 
   avg_bz avg (
      .clk          (clk_12),

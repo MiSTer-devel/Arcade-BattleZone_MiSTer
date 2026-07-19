@@ -439,6 +439,8 @@ wire  [7:0] avg_z_raw;
 wire  [2:0] avg_rgb;
 wire        avg_is_dot;
 wire        avg_halted;
+wire        dbg_vggo, dbg_vgrst;
+wire [15:0] dbg_cpu_addr;
 
 assign AUDIO_R = AUDIO_L;
 // Unsigned is correct despite ASSESSMENT.md 5.1 flagging it: audio_output.sv:70
@@ -465,6 +467,9 @@ top bzonetop(
   .avg_rgb(avg_rgb),
   .avg_is_dot(avg_is_dot),
   .avg_halted(avg_halted),
+  .dbg_vggo(dbg_vggo),
+  .dbg_vgrst(dbg_vgrst),
+  .dbg_cpu_addr(dbg_cpu_addr),
   .audio(AUDIO_L),
   .dl_addr(ioctl_addr),
   .dl_data(ioctl_dout),
@@ -901,6 +906,58 @@ always @(posedge clk_125) begin
 	blend_r      <= above_r ? 8'd0 : (in_band_r ? blend_full_r[15:8] : 8'd255);
 end
 
+//
+// Bring-up diagnostics.
+//
+// Eight sticky latches rendered as squares along the top of the screen, so a
+// single build tells us how far the pipeline actually gets rather than costing
+// a 25-minute rebuild per hypothesis. Left to right:
+//   0 AVG state PROM was written during ROM download
+//   1 vector ROM was written during ROM download
+//   2 CPU address bus has changed since reset (T65 is fetching)
+//   3 CPU reached program ROM ($4000+), i.e. it took the reset vector
+//   4 VGGO seen (the game asked the AVG to run)
+//   5 AVG left the halted state
+//   6 AVG produced a non-zero Z (a visible vector)
+//   7 BEAM_ON reached the renderer in bounds
+//
+reg dbg_prom_wr, dbg_vecrom_wr, dbg_cpu_move, dbg_cpu_rom;
+reg dbg_saw_vggo, dbg_avg_ran, dbg_z_nz, dbg_beam;
+reg [15:0] dbg_addr_prev;
+
+always @(posedge clk_12) begin
+	if (reset) begin
+		dbg_cpu_move <= 0; dbg_cpu_rom <= 0; dbg_saw_vggo <= 0;
+		dbg_avg_ran  <= 0; dbg_z_nz    <= 0; dbg_beam     <= 0;
+	end else begin
+		dbg_addr_prev <= dbg_cpu_addr;
+		if (dbg_addr_prev != dbg_cpu_addr)       dbg_cpu_move <= 1'b1;
+		if (dbg_cpu_addr >= 16'h4000 &&
+		    dbg_cpu_addr <  16'h8000)            dbg_cpu_rom  <= 1'b1;
+		if (dbg_vggo)                            dbg_saw_vggo <= 1'b1;
+		if (!avg_halted)                         dbg_avg_ran  <= 1'b1;
+		if (avg_z_raw != 8'd0)                   dbg_z_nz     <= 1'b1;
+		if (vfb_beam_on_q)                       dbg_beam     <= 1'b1;
+	end
+	// ROM-download latches must survive the reset that download asserts.
+	if (ioctl_wr && !ioctl_index) begin
+		if (ioctl_addr[15:8]  == 8'h50) dbg_prom_wr   <= 1'b1;
+		if (ioctl_addr[15:12] == 4'h4)  dbg_vecrom_wr <= 1'b1;
+	end
+end
+
+wire [7:0] dbg_bits = {dbg_beam, dbg_z_nz, dbg_avg_ran, dbg_saw_vggo,
+                       dbg_cpu_rom, dbg_cpu_move, dbg_vecrom_wr, dbg_prom_wr};
+
+// Squares of 24px, 8px apart, on rows 8..32.
+wire        dbg_row   = (v_cnt >= 11'd8) && (v_cnt < 11'd32);
+wire [10:0] dbg_col   = h_cnt - 11'd8;
+wire        dbg_in    = dbg_row && (h_cnt >= 11'd8) && (dbg_col < 11'd256);
+wire  [2:0] dbg_idx   = dbg_col[7:5];
+wire        dbg_cell  = dbg_col[4:0] < 5'd24;
+wire        dbg_lit   = dbg_in && dbg_cell && dbg_bits[dbg_idx];
+wire        dbg_frame = dbg_in && dbg_cell && !dbg_bits[dbg_idx];
+
 wire [15:0] lum_r = vfb_r * (8'd255 - blend_r);
 wire [15:0] lum_g = vfb_g * blend_r;
 
@@ -910,9 +967,9 @@ reg  [7:0] r_d, g_d, b_d;
 reg        hs_d, vs_d, de_d, ce_pix_d;
 
 always @(posedge clk_125) begin
-	r_d      <= overlay_on ? lum_r[15:8] : vfb_r;
-	g_d      <= overlay_on ? lum_g[15:8] : vfb_g;
-	b_d      <= overlay_on ? 8'd0        : vfb_b;
+	r_d      <= dbg_lit ? 8'd0   : dbg_frame ? 8'd48 : overlay_on ? lum_r[15:8] : vfb_r;
+	g_d      <= dbg_lit ? 8'd255 : dbg_frame ? 8'd48 : overlay_on ? lum_g[15:8] : vfb_g;
+	b_d      <= dbg_lit ? 8'd0   : dbg_frame ? 8'd48 : overlay_on ? 8'd0        : vfb_b;
 	hs_d     <= hs;
 	vs_d     <= vs;
 	de_d     <= ~(hblank | vblank);

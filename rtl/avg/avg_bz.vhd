@@ -68,9 +68,15 @@ begin
     -- and vector ROMs, at $5000. Identical part in bzone, redbaron and bwidow.
     avg_prom_wr <= dn_wr when dn_addr(15 downto 8) = x"50" else '0';
 
-    -- Atari vector memory stores words low byte first; the PROM-driven core
-    -- requests bytes in hardware latch order (high byte first), so swap A0 on
-    -- AVG fetches only. CPU accesses keep the original layout.
+    -- Atari vector memory stores words low byte first, so the high byte (which
+    -- carries the opcode in bits 7:5) lives at the odd address. The PROM-driven
+    -- core reads in hardware latch order and wants that byte first -- LATCH1
+    -- before LATCH0 -- so swap A0 on AVG fetches only. CPU accesses keep the
+    -- original layout.
+    --
+    -- NOTE: the old behavioural AVG this replaced assumed the opposite
+    -- (rtl/top.sv put the high byte at the even address). If the display list
+    -- renders as garbage, inverting this line is the first thing to try.
     avg_fetch_addr <= avg_addr(12 downto 1) & (not avg_addr(0));
 
     -- Single shared memory port, so the response is tagged and matched two
