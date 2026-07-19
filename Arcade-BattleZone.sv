@@ -617,8 +617,8 @@ reg [11:0] fb_width_next, fb_height_next, x_center_next, y_center_next;
 reg [12:0] auto_arx_next, auto_ary_next;
 reg [11:0] h_total_next, v_total_next, hs_start_next, hs_end_next, vs_start_next, vs_end_next;
 reg is_1080p_next, is_480p_next, is_240p_next;
-reg [11:0] band_recip_next;
-reg [11:0] band_recip = 12'd1092;
+reg [12:0] band_recip_next;
+reg [12:0] band_recip = 13'd2185;
 
 always @(*) begin
 	is_1080p_next = (stable_height_meta >= 12'd1080 && stable_height_meta < 12'd1400);
@@ -633,7 +633,7 @@ always @(*) begin
 		h_total_next  = 12'd1851; v_total_next  = 12'd1124;
 		hs_start_next = 12'd1600; hs_end_next   = 12'd1688;
 		vs_start_next = 12'd1088; vs_end_next   = 12'd1093;
-		band_recip_next = 12'd485;   // 65536/135
+		band_recip_next = 13'd978;   // 65536/(1080/16)
 	end else if (is_240p_next) begin
 		fb_width_next = 12'd640;  fb_height_next = 12'd240;
 		x_center_next = 12'd320;  y_center_next  = 12'd119;
@@ -642,7 +642,7 @@ always @(*) begin
 		h_total_next  = 12'd993;  v_total_next  = 12'd261;
 		hs_start_next = 12'd720;  hs_end_next   = 12'd816;
 		vs_start_next = 12'd245;  vs_end_next   = 12'd248;
-		band_recip_next = 12'd2185;  // 65536/30
+		band_recip_next = 13'd4369;  // 65536/(240/16)
 	end else if (is_480p_next) begin
 		fb_width_next = 12'd640;  fb_height_next = 12'd480;
 		x_center_next = 12'd320;  y_center_next  = 12'd237;
@@ -651,7 +651,7 @@ always @(*) begin
 		h_total_next  = 12'd992;  v_total_next  = 12'd524;
 		hs_start_next = 12'd720;  hs_end_next   = 12'd816;
 		vs_start_next = 12'd490;  vs_end_next   = 12'd492;
-		band_recip_next = 12'd1092;  // 65536/60
+		band_recip_next = 13'd2185;  // 65536/(480/16)
 	end else begin
 		fb_width_next = 12'd980;  fb_height_next = 12'd720;
 		x_center_next = 12'd490;  y_center_next  = 12'd350;
@@ -660,7 +660,7 @@ always @(*) begin
 		h_total_next  = 12'd1388; v_total_next  = 12'd749;
 		hs_start_next = 12'd1108; hs_end_next   = 12'd1196;
 		vs_start_next = 12'd728;  vs_end_next   = 12'd733;
-		band_recip_next = 12'd728;   // 65536/90
+		band_recip_next = 13'd1456;  // 65536/(720/16)
 	end
 end
 
@@ -926,7 +926,11 @@ end
 // cycles of latency on a per-line value is invisible. Doing this
 // combinationally put a subtract and two chained multiplies between the row
 // counter and the output pins, which cost ~7.5 ns of setup slack at 125 MHz.
-wire [11:0] band_top = fb_height >> 3;
+// The red section covers the score area down to a quarter of the screen, as
+// the pre-rework hard cut at scanline 120 of 480 did; the blend then runs over
+// the next sixteenth so the transition is not a razor edge. Placing the band
+// higher (h/8 to h/4) left the SCORE text mid-gradient and rendered it yellow.
+wire [11:0] band_top = fb_height >> 2;
 wire        overlay_on = mod_is_battlezone & ~status[20];
 
 reg [11:0] row_r;
@@ -937,7 +941,7 @@ reg        above_r, in_band_r;
 always @(posedge clk_125) begin
 	row_r        <= {1'b0, disp_y};
 	above_r      <= (row_r < band_top);
-	in_band_r    <= (row_r >= band_top) && (row_r < (fb_height >> 2));
+	in_band_r    <= (row_r >= band_top) && (row_r < (band_top + (fb_height >> 4)));
 	blend_full_r <= (row_r - band_top) * band_recip;
 	blend_r      <= above_r ? 8'd0 : (in_band_r ? blend_full_r[15:8] : 8'd255);
 end
