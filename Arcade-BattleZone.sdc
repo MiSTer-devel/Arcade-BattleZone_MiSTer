@@ -22,3 +22,20 @@ foreach idx {0 1 2 3} {
 if {[llength $emu_groups] > 2} {
 	eval set_clock_groups -asynchronous $emu_groups
 }
+
+# The renderer's OSD control registers (vfb_top.sv:417-440) are the tail of a
+# CDC synchronizer chain carrying menu settings into the video domain. They are
+# static for millions of cycles and only move when the user changes an OSD
+# option, so the several-hundred-picosecond setup failures reported on the paths
+# out of them into the bloom filter are not data-path violations. Relax them
+# rather than let quasi-static configuration dominate the timing report.
+set osd_cfg [get_registers -nowarn {*vfb_top*osd_*_vid*}]
+set osd_cfg2 [get_registers -nowarn {*vfb_top*bloom_curve_gain*}]
+set osd_cfg3 [get_registers -nowarn {*vfb_top*halo_filter*}]
+
+foreach c [list $osd_cfg $osd_cfg2 $osd_cfg3] {
+	if {[get_collection_size $c] > 0} {
+		set_multicycle_path -setup -from $c 4
+		set_multicycle_path -hold  -from $c 3
+	}
+}

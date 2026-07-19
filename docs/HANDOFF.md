@@ -6,9 +6,45 @@
 **Companion document:** [`ASSESSMENT.md`](ASSESSMENT.md) — read that first for the *why*
 behind everything here.
 
-> **Status of this document:** The plan below is being implemented on branch
-> `vector-pipeline-port`. The original draft was a static source review with nothing
-> built, simulated, or run on hardware.
+> **Status of this document:** Phase 1 is **implemented and running on hardware** on
+> branch `vector-pipeline-port`. See "Phase 1 results" below. The original draft was a
+> static source review with nothing built, simulated, or run on hardware.
+
+---
+
+## Phase 1 results (built and tested on hardware)
+
+All three games render with the CRT pipeline on a 5CSEBA6. Verified by screenshot on a
+real MiSTer at 720p: Battlezone (green vectors, red score band, phosphor glow, bloom),
+Red Baron and Bradley Trainer (monochrome white, no overlay).
+
+**Fit:** 87% ALMs, 36% block memory, 63% DSP, 3 PLLs.
+**Timing:** −0.734 ns worst setup on the 125 MHz domain. The residual paths are in the
+framework's `ascal` scaler and Videodr0me's bloom filter, not in this core's logic.
+Everything else has positive slack (clk_12 has +62 ns). Worth another look before
+release, but no core logic is on the failing paths.
+
+### Bugs found during bring-up, and what caused them
+
+| Symptom | Cause |
+|---|---|
+| Black screen, correct 980×720 timing | The 1.512 MHz clock enable was gated by reset. `avg_prom_core` works only inside `if clken='1'`, so it never sampled `vgrst`, `halt_flag` never got set, and it powers up at 0 meaning *running* — the AVG executed garbage from `pc=0`. **Black Widow's divider free-runs; ours must too.** |
+| CPU never reached the VGGO write | Same gating: `coreReset_l` released on the first enable after reset, giving T65 ~zero *enabled* cycles with `Res_n` low. Now stretched to 256, as `bwidow_top.vhd:104-118` does. |
+| (latent) CPU would read stale data | `addrDecoder`'s read mux was registered on the CPU enable, describing the *previous* cycle. That suits Arlet's 6502, which has a registered address bus and presents the address a cycle ahead. T65 needs `DI` in the same enabled cycle — Black Widow's `c_din` is combinational. |
+| (latent) AVG would fetch early | `vecmem_bz` merged Black Widow's vector RAM and ROM into one instance and lost a pipeline stage. `ram_2k` sets `outdata_reg_a => "CLOCK0"` (2 cycles) and `vecrom_dout_q` matches it; the AVG's tag pipeline is 2 deep to suit. |
+| Image 1.34× overscaled, clipping at the edges | Scale constants inherited from Black Widow encode *its* playfield extent. Retuned against the pre-rework 640×480 output. |
+| Overlay band in the wrong place | Drawn against raw `h_cnt`/`v_cnt`, which lead the renderer's output by ~92 px and 50 lines. Both the overlay and the diagnostics now use display coordinates derived from the renderer's own blanking. |
+
+**Technique worth reusing:** the eight sticky diagnostic latches drawn as on-screen
+squares (OSD toggle: Debug Overlay). They localized the reset bug in one build; without
+them the obvious-looking fix (the read mux) would have been shipped and the screen would
+still have been black. Prefix them with a fixed marker pattern so the cell-to-bit mapping
+is self-identifying — the first attempt was ambiguous and produced a reading that was
+internally contradictory.
+
+**Settled empirically:** the A0 swap in `avg_bz.vhd`. Black Widow and the old Battlezone
+core disagreed about vector-memory byte order; Black Widow's little-endian convention is
+correct, since the display list decodes into recognisable Battlezone.
 
 ---
 
@@ -318,9 +354,20 @@ from `pause.v` as `Rdy => not pause_h`.
 5. **Is `AUDIO_S = 0` actually wrong?** Still open. Needs a listening test.
 6. **Does `bradley.zip` contain `036408-01`?** New. If not, Bradley's MRA must reference
    bzone's copy or inline the 256 bytes the way Black Widow inlines its index-3 part.
-7. **Are the Red Baron controls correct?** New. The analog stick is faked by writing the
-   axis byte straight into POKEY's ALLPOT (`Arcade-BattleZone.sv:340`, `rtl/POKEY.sv:176`)
-   with a 1-sample, no-RC-timing pot model. Reported as suspect; needs testing.
+7. **Are the Red Baron controls correct?** Partly resolved, **fix untested**.
+   - The ALLPOT approach is *not* a hack: MAME overrides Red Baron's `allpot_r()` to
+     return the stick value selected by the output latch, which is exactly what this
+     core does (`rtl/POKEY.sv:176` snapshots the P pins on a POTGO write).
+   - The real defect: the axis came straight from `joystick_l_analog_0`, so with no
+     analog stick connected it sat at centre and **the d-pad did nothing at all**.
+     A spring-return digital fallback is now in place, clamped to `0x40..0xbf` to match
+     MAME's `PORT_MINMAX` for that stick.
+   - **Not verified on hardware.** The mrext remote API only exposes MiSTer system keys
+     (`up`/`down`/`left`/`right`/`osd`/`user`/`reset`/`menu`), not game buttons, so a
+     coin cannot be inserted remotely and Red Baron cannot be driven out of attract mode.
+     Needs a human with a controller. Check: d-pad should turn the aircraft smoothly and
+     recentre when released; verify the X/Y axes are not swapped and that neither is
+     inverted, since the `audiosel` axis select is inherited and unconfirmed.
 
 ---
 
