@@ -1,3 +1,6 @@
+set_global_assignment -name SDC_FILE "Arcade-BattleZone.sdc"
+
+# --- sound (50 MHz domain, unchanged) ---
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/bang_sound.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/noise_shifters_red_baron.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/noise_shifters.sv
@@ -15,18 +18,48 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/analog_sound.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/audio_output.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/output_latch.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/POKEY.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/matoro.sv
+
+# --- game logic (12.096 MHz domain) ---
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/top.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sp_ram.sv
 set_global_assignment -name VHDL_FILE rtl/dpram.vhd
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/POKEY.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mathbox.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/ALU.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/coreInterface.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/avg.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/avg_decode.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/rasterizer.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/VGA_fsm.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/matoro.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/fb_controller.sv
+
+# --- CPU ---
+set_global_assignment -name VHDL_FILE rtl/t65/T65_Pack.vhd
+set_global_assignment -name VHDL_FILE rtl/t65/T65_MCode.vhd
+set_global_assignment -name VHDL_FILE rtl/t65/T65_ALU.vhd
+set_global_assignment -name VHDL_FILE rtl/t65/T65.vhd
+
+# --- vector generator ---
+set_global_assignment -name VHDL_FILE rtl/avg/vector_drawer.vhd
+set_global_assignment -name VHDL_FILE rtl/avg/avg_prom_core.vhd
+set_global_assignment -name VHDL_FILE rtl/avg/vecmem_bz.vhd
+set_global_assignment -name VHDL_FILE rtl/avg/avg_bz.vhd
+
+# --- renderer ---
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_rasterizer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_phosphor_timing.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_ddr_arbiter.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_buffer_controller.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_tile_cache_manager.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_readout.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_blur.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_filter.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_rle_encoder.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_rle_decoder.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_sync_fifo.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_sdram_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_sdram_delay.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_halo_wide.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_profile_resolver.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_final_present.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_halo_pipeline.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_top.sv
+
+# --- framework ---
+set_global_assignment -name SYSTEMVERILOG_FILE "rtl/pause.v"
 set_global_assignment -name SYSTEMVERILOG_FILE "Arcade-BattleZone.sv"

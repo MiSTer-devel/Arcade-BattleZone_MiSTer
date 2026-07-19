@@ -50,3 +50,7 @@ spice/.ipynb_checkpoints/
 
 # ROM zips used for verification, not for distribution
 *.zip
+build_id.v
+output_files/
+db/
+incremental_db/

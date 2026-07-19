@@ -184,8 +184,7 @@ assign VGA_DISABLE=0;
 assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
-assign USER_OUT  = '1;
-assign LED_USER  = ioctl_download;
+assign LED_USER  = ioctl_download | fifo_full_led;
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
 
@@ -194,52 +193,88 @@ assign USER_OUT = '1;
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
-assign {SDRAM_DQ, SDRAM_A, SDRAM_BA, SDRAM_CLK, SDRAM_CKE, SDRAM_DQML, SDRAM_DQMH, SDRAM_nWE, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nCS} = 'Z;
-assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;  
+// SDRAM carries the compressed halo-alignment delay line; DDRAM carries the
+// tile framebuffer. Both are driven by vfb_top -- see the instantiation below.
+assign SDRAM_DQ   = sdram_dq_oe ? sdram_dq_out : 16'hzzzz;
+assign SDRAM_DQML = sdram_dqm[0];
+assign SDRAM_DQMH = sdram_dqm[1];
+assign SDRAM_CLK  = ~clk_125;
+
 assign BUTTONS = 0;
 
 assign AUDIO_MIX = 0;
 
-
-wire [1:0] ar = status[15:14];
-assign VIDEO_ARX =  (!ar) ? ( 8'd4) : (ar - 1'd1);
-assign VIDEO_ARY =  (!ar) ? ( 8'd3) : 12'd0;
-
-`include "build_id.v" 
+`include "build_id.v"
+//
+// status bit allocation
+//   0        Reset
+//   3        Self Test
+//   15:14    Aspect ratio
+//   20       Overlay on/off
+//   25       120 Hz output
+//   28:26    CRT profile
+//   30:29    Dot scale      (only meaningful with the profile Off)
+//   32:31    Phosphor decay (only meaningful with the profile Off)
+//   33       Direct video scan rate
+//
 localparam CONF_STR = {
 	"A.BATTLEZONE;;",
-	"H0OEF,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"OEF,Aspect ratio,Optimized,Stretched,Pixel Perfect;",
+	"h0OX,Direct Video Scan Rate,15 kHz (240p),31 kHz (480p);",
+	"D3OP,120Hz Output (720p),Off,On;",
+	"-;",
+	"OQS,CRT Profile,80s Cruise Control,80s Overdrive,Neon Fever Dream,Custom 1,Custom 2,Off,A Touch of CRT;",
+	"h7OTU,Dot Scale,Auto,Off,1,2;",
+	"h7OVW,Phosphor Decay,Off,Short,Medium,Long;",
+	"-;",
+	"h8OK,Overlay,On,Off;",
 	"-;",
 	"DIP;",
 	"-;",
 	"O3,Self Test,Off,On;",
 	"-;",
 	"R0,Reset;",
-	"J1,fire,Start 1P,Start 2P,Coin;",
-	"jn,A,Start,Select,R;",
+	"J1,fire,Start 1P,Start 2P,Coin,Pause;",
+	"jn,A,Start,Select,R,L;",
 	"V,v",`BUILD_DATE
+};
+
+wire [15:0] status_menumask = {
+	7'd0,
+	mod_is_battlezone,           // h8 - overlay only exists on Battlezone
+	crt_profile_off,             // h7
+	3'd0,
+	(STABLE_HEIGHT != 12'd720),  // D3 - 120 Hz is 720p only
+	2'd0,
+	direct_video                 // h0
 };
 
 ////////////////////   CLOCKS   ///////////////////
 
-wire clk_6, clk_25, clk_50;
+wire clk_6, clk_12, clk_50, clk_125;
 wire pll_locked;
 
 pll pll
 (
 	.refclk(CLK_50M),
 	.rst(0),
-	.outclk_0(clk_50),	
-	.outclk_1(clk_25),	
-	.outclk_2(clk_6),	
+	.outclk_0(clk_50),
+	.outclk_1(clk_12),
+	.outclk_2(clk_6),
+	.outclk_3(clk_125),
 	.locked(pll_locked)
 );
 
+assign CLK_VIDEO = clk_125;
 
 ///////////////////////////////////////////////////
 
-wire [31:0] status;
-wire  [1:0] buttons;
+
+wire [127:0] status;
+wire   [1:0] buttons;
+wire         direct_video;
+wire         forced_scandoubler;
+wire  [21:0] gamma_bus;
 
 wire        ioctl_download;
 wire        ioctl_wr;
@@ -247,21 +282,20 @@ wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_dout;
 wire  [7:0] ioctl_index;
 
-
 wire [15:0] joy_0, joy_1;
 wire [15:0] joy = joy_0 | joy_1;
 wire [15:0] joya;
 
-wire        forced_scandoubler;
-wire [21:0] gamma_bus;
-
 hps_io #(.CONF_STR(CONF_STR)) hps_io
 (
-	.clk_sys(clk_25),
+	.clk_sys(clk_12),
 	.HPS_BUS(HPS_BUS),
 
 	.buttons(buttons),
 	.status(status),
+	.status_menumask(status_menumask),
+	.gamma_bus(gamma_bus),
+	.direct_video(direct_video),
 	.forced_scandoubler(forced_scandoubler),
 
 	.ioctl_download(ioctl_download),
@@ -272,122 +306,140 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.joystick_0(joy_0),
 	.joystick_1(joy_1),
-   .joystick_l_analog_0(joya)
-	
+	.joystick_l_analog_0(joya)
 );
 
-
-/// from ultratank
-
-reg JoyW_Fw,JoyW_Bk,JoyX_Fw,JoyX_Bk;
-reg JoyY_Fw,JoyY_Bk,JoyZ_Fw,JoyZ_Bk;
-always @(posedge clk_50) begin 
-	case ({joy[3],joy[2],joy[1],joy[0]}) // Up,Down,Left,Right
-		4'b1010: begin JoyW_Fw=0; JoyW_Bk=0; JoyX_Fw=1; JoyX_Bk=0; end //Up_Left
-		4'b1000: begin JoyW_Fw=1; JoyW_Bk=0; JoyX_Fw=1; JoyX_Bk=0; end //Up
-		4'b1001: begin JoyW_Fw=1; JoyW_Bk=0; JoyX_Fw=0; JoyX_Bk=0; end //Up_Right
-		4'b0001: begin JoyW_Fw=1; JoyW_Bk=0; JoyX_Fw=0; JoyX_Bk=1; end //Right
-		4'b0101: begin JoyW_Fw=0; JoyW_Bk=1; JoyX_Fw=0; JoyX_Bk=0; end //Down_Right
-		4'b0100: begin JoyW_Fw=0; JoyW_Bk=1; JoyX_Fw=0; JoyX_Bk=1; end //Down
-		4'b0110: begin JoyW_Fw=0; JoyW_Bk=0; JoyX_Fw=0; JoyX_Bk=1; end //Down_Left
-		4'b0010: begin JoyW_Fw=0; JoyW_Bk=1; JoyX_Fw=1; JoyX_Bk=0; end //Left
-		default: begin JoyW_Fw=0; JoyW_Bk=0; JoyX_Fw=0; JoyX_Bk=0; end
-	endcase
-end
-
-localparam mod_battlezone  = 0;
-localparam mod_bradley     = 1;
+localparam mod_battlezone = 0;
+localparam mod_bradley    = 1;
 localparam mod_redbaron   = 2;
 
-
 reg [7:0] mod = 255;
-always @(posedge clk_25) if (ioctl_wr & (ioctl_index==1)) mod <= ioctl_dout;
+always @(posedge clk_12) if (ioctl_wr & (ioctl_index==1)) mod <= ioctl_dout;
 
+wire mod_is_battlezone = (mod == mod_battlezone);
+wire mod_is_bradley    = (mod == mod_bradley);
+wire mod_is_redbaron   = (mod == mod_redbaron);
 
 reg [7:0] sw[8];
-always @(posedge clk_25) if (ioctl_wr && (ioctl_index==254) && !ioctl_addr[24:3]) sw[ioctl_addr[2:0]] <= ioctl_dout;
-
-
-wire [7:0] JB;
-wire [7:0] arcadebuttons;
-wire audiosel;
-wire [7:0] REDBARONBUTTONS;
-wire [7:0] REDBARONJOY;
-always @(*) begin
-			JB<=8'b0;
-			arcadebuttons <= 8'b0;
-			REDBARONBUTTONS<=8'b0;
-        case (mod) 
-		  
-			mod_battlezone:
-			begin
-			   // Pokey P (arcade buttons) : NC,NC, Start, Fire, L-For, L-Rev, R-For, R-Rev
-				JB <= { /* 7 coin */ joy[7],joy[5],joy[6],joy[4],JoyW_Fw,JoyW_Bk,JoyX_Fw,JoyX_Bk};
-				arcadebuttons <= {{2'b00},{joy[5]},{|{joy[6],joy[4]}},JoyW_Fw,JoyW_Bk,JoyX_Fw,JoyX_Bk};
-
-			end
-			mod_bradley:
-			begin
-				JB <= { /* 7 coin */ joy[7],joy[5],joy[6],joy[4],JoyW_Fw,JoyW_Bk,JoyX_Fw,JoyX_Bk};
-				arcadebuttons <= {{2'b00},{joy[5]},{|{joy[6],joy[4]}},JoyW_Fw,JoyW_Bk,JoyX_Fw,JoyX_Bk};
-			end
-			mod_redbaron:
-			begin 
-			    // Fire, Start, Analog ?
-				JB <= { /* 7 coin */ ~joy[7],joy[5],joy[6],joy[4],joy[2],joy[3],joy[0],joy[1]};
-				//arcadebuttons<={4'b0,joy[3],joy[0],joy[1]};
-				REDBARONBUTTONS<={joy[4],joy[5],6'b0};		
-				arcadebuttons <= audiosel ? (8'd255-(8'd127 - joya[7:0])) : (8'd255-(8'd127 - joya[15:8]));
-			end
-			default:
-			begin
-				JB <= { /* 7 coin */ joy[7],joy[5],joy[6],joy[4],JoyW_Fw,JoyW_Bk,JoyX_Fw,JoyX_Bk};
-				arcadebuttons <= {{2'b00},{joy[5]},{|{joy[6],joy[4]}},JoyW_Fw,JoyW_Bk,JoyX_Fw,JoyX_Bk};
-			end
-		 endcase
-end			
+always @(posedge clk_12) if (ioctl_wr && (ioctl_index==254) && !ioctl_addr[24:3]) sw[ioctl_addr[2:0]] <= ioctl_dout;
 
 wire [7:0] DSW0 = sw[0];
 wire [7:0] DSW1 = sw[1];
-//  assign buttons = {{2'b00},{JB[6]},{|JB[5:4]},{JB[3:0]}};
-//  7-> coin
-
-
-///////////////////////////////////////////////////////////////////
-
-wire hblank, vblank;
-wire hs, vs;
-wire [3:0] r,g,b;
-
-reg ce_pix;
-always @(posedge clk_50) begin
-       ce_pix <= !ce_pix;
-end
-arcade_video #(640,12) arcade_video
-(
-        .*,
-
-        .clk_video(clk_50),
-
-        .RGB_in({r,g,b}),
-
-        .HBlank(hblank),
-        .VBlank(vblank),
-        .HSync(hs),
-        .VSync(vs),
-
-        .forced_scandoubler(0),
-        .fx(0)
-);
-
 
 wire reset = (RESET | status[0] | buttons[1] | ioctl_download);
 
+////////////////////   INPUTS   ///////////////////
+
+// Battlezone's twin sticks synthesized from a single d-pad (from Ultratank).
+reg JoyW_Fw, JoyW_Bk, JoyX_Fw, JoyX_Bk;
+always @(posedge clk_12) begin
+	case ({joy[3],joy[2],joy[1],joy[0]}) // Up,Down,Left,Right
+		4'b1010: begin JoyW_Fw<=0; JoyW_Bk<=0; JoyX_Fw<=1; JoyX_Bk<=0; end //Up_Left
+		4'b1000: begin JoyW_Fw<=1; JoyW_Bk<=0; JoyX_Fw<=1; JoyX_Bk<=0; end //Up
+		4'b1001: begin JoyW_Fw<=1; JoyW_Bk<=0; JoyX_Fw<=0; JoyX_Bk<=0; end //Up_Right
+		4'b0001: begin JoyW_Fw<=1; JoyW_Bk<=0; JoyX_Fw<=0; JoyX_Bk<=1; end //Right
+		4'b0101: begin JoyW_Fw<=0; JoyW_Bk<=1; JoyX_Fw<=0; JoyX_Bk<=0; end //Down_Right
+		4'b0100: begin JoyW_Fw<=0; JoyW_Bk<=1; JoyX_Fw<=0; JoyX_Bk<=1; end //Down
+		4'b0110: begin JoyW_Fw<=0; JoyW_Bk<=0; JoyX_Fw<=0; JoyX_Bk<=1; end //Down_Left
+		4'b0010: begin JoyW_Fw<=0; JoyW_Bk<=1; JoyX_Fw<=1; JoyX_Bk<=0; end //Left
+		default: begin JoyW_Fw<=0; JoyW_Bk<=0; JoyX_Fw<=0; JoyX_Bk<=0; end
+	endcase
+end
+
+//
+// Red Baron analog fallback.
+//
+// Red Baron has a single self-centering flight stick read through POKEY's pot
+// lines. Previously the raw analog axis was written straight into ALLPOT, so
+// with no analog stick connected the value sat at centre and the d-pad did
+// nothing at all. Synthesize a stick position from the d-pad when no analog
+// input is present: ramp toward the extreme while held, spring back to centre
+// when released, which is what the real stick does.
+//
+localparam RB_RATE = 12'd1500;   // ~8 clk_12 ticks per LSB -> ~0.2 s end to end
+
+wire signed [8:0] joya_x = $signed({joya[15:8], 1'b0}) >>> 1;
+wire signed [8:0] joya_y = $signed({joya[7:0],  1'b0}) >>> 1;
+wire analog_active = (joya[15:8] != 8'd0) || (joya[7:0] != 8'd0);
+
+reg  [11:0] rb_tick = 0;
+reg signed [8:0] rb_x = 0;
+reg signed [8:0] rb_y = 0;
+wire rb_step = (rb_tick == RB_RATE);
+
+always @(posedge clk_12) begin
+	rb_tick <= rb_step ? 12'd0 : rb_tick + 12'd1;
+	if (rb_step) begin
+		// X: joy[0] right, joy[1] left
+		if (joy[0] && !joy[1])       rb_x <= (rb_x < $signed(9'sd127))  ? rb_x + 9'sd1 : rb_x;
+		else if (joy[1] && !joy[0])  rb_x <= (rb_x > $signed(-9'sd127)) ? rb_x - 9'sd1 : rb_x;
+		else if (rb_x > 0)           rb_x <= rb_x - 9'sd1;
+		else if (rb_x < 0)           rb_x <= rb_x + 9'sd1;
+
+		// Y: joy[3] up, joy[2] down
+		if (joy[3] && !joy[2])       rb_y <= (rb_y < $signed(9'sd127))  ? rb_y + 9'sd1 : rb_y;
+		else if (joy[2] && !joy[3])  rb_y <= (rb_y > $signed(-9'sd127)) ? rb_y - 9'sd1 : rb_y;
+		else if (rb_y > 0)           rb_y <= rb_y - 9'sd1;
+		else if (rb_y < 0)           rb_y <= rb_y + 9'sd1;
+	end
+end
+
+wire signed [8:0] rb_axis_x = analog_active ? joya_x : rb_x;
+wire signed [8:0] rb_axis_y = analog_active ? joya_y : rb_y;
+
+// POKEY pot lines are unsigned, centred at 128.
+wire [7:0] rb_pot_x = 8'd128 + rb_axis_x[7:0];
+wire [7:0] rb_pot_y = 8'd128 + rb_axis_y[7:0];
+
+wire [7:0] JB;
+wire [7:0] arcadebuttons;
+wire       audiosel;
+wire [7:0] REDBARONBUTTONS;
+
+assign JB = mod_is_redbaron
+	? { ~joy[7], joy[5], joy[6], joy[4], joy[2], joy[3], joy[0], joy[1] }
+	: {  joy[7], joy[5], joy[6], joy[4], JoyW_Fw, JoyW_Bk, JoyX_Fw, JoyX_Bk };
+
+// POKEY P port: NC, NC, Start, Fire, L-For, L-Rev, R-For, R-Rev
+assign arcadebuttons = mod_is_redbaron
+	? (audiosel ? rb_pot_y : rb_pot_x)
+	: { 2'b00, joy[5], |{joy[6],joy[4]}, JoyW_Fw, JoyW_Bk, JoyX_Fw, JoyX_Bk };
+
+assign REDBARONBUTTONS = mod_is_redbaron ? {joy[4], joy[5], 6'b0} : 8'b0;
+
+////////////////////   PAUSE   ////////////////////
+
+wire m_pause = joy[11];
+wire pause_cpu;
+wire [11:0] pause_rgb_unused;
+
+pause #(4,4,4,12) pause_mod (
+	.clk_sys(clk_12),
+	.reset(reset),
+	.user_button(m_pause),
+	.pause_request(1'b0),
+	.options({1'b0, 1'b0}),
+	.OSD_STATUS(OSD_STATUS),
+	.r(4'd0), .g(4'd0), .b(4'd0),
+	.pause_cpu(pause_cpu),
+	.rgb_out(pause_rgb_unused)
+);
+
+////////////////////   CORE   /////////////////////
+
+wire [13:0] avg_x;
+wire [13:0] avg_y;
+wire  [7:0] avg_z_raw;
+wire  [2:0] avg_rgb;
+wire        avg_is_dot;
+wire        avg_halted;
+
 assign AUDIO_R = AUDIO_L;
-assign AUDIO_S = 0;
+assign AUDIO_S = 1;
 
 top bzonetop(
-  .clk_i(clk_50),
+  .clk_12(clk_12),
+  .clk_50(clk_50),
   .btnCpuReset(~reset),
   .DSW0(DSW0),
   .DSW1(DSW1),
@@ -396,22 +448,453 @@ top bzonetop(
   .REDBARONBUTTONS(REDBARONBUTTONS),
   .audiosel(audiosel),
   .self_test(~status[3]),
-  .vgaRed(r),
-  .vgaGreen(g),
-  .vgaBlue(b),
-  .Hsync(hs),
-  .Vsync(vs),
-  .hBlank(hblank),
-  .vBlank(vblank),
-  .en_r(),
+  .pause_cpu(pause_cpu),
+  .avg_x(avg_x),
+  .avg_y(avg_y),
+  .avg_z(avg_z_raw),
+  .avg_rgb(avg_rgb),
+  .avg_is_dot(avg_is_dot),
+  .avg_halted(avg_halted),
   .audio(AUDIO_L),
   .dl_addr(ioctl_addr),
   .dl_data(ioctl_dout),
   .dl_wr(ioctl_wr & !ioctl_index),
-  .mod_bradley(mod==mod_bradley),
-  .mod_redbaron(mod==mod_redbaron),
-  .mod_battlezone(mod==mod_battlezone)
+  .mod_bradley(mod_is_bradley),
+  .mod_redbaron(mod_is_redbaron),
+  .mod_battlezone(mod_is_battlezone)
 );
 
+/////////////////   VIDEO MODE   //////////////////
+
+reg [11:0] h_s1 = 0, h_s2 = 0;
+reg [11:0] hdmi_height_candidate = 0;
+reg [11:0] stable_height_reg = 0;
+reg [24:0] hdmi_height_timer = 0;
+reg direct_video_s1 = 0, direct_video_s2 = 0;
+reg direct_video_31khz_s1 = 0, direct_video_31khz_s2 = 0;
+
+always @(posedge clk_50) begin
+	direct_video_s1 <= direct_video;
+	direct_video_s2 <= direct_video_s1;
+	direct_video_31khz_s1 <= status[33];
+	direct_video_31khz_s2 <= direct_video_31khz_s1;
+
+	if (direct_video_s2)
+		h_s1 <= direct_video_31khz_s2 ? 12'd480 : 12'd240;
+	else
+		h_s1 <= HDMI_HEIGHT;
+	h_s2 <= h_s1;
+
+	if (h_s1 == h_s2) begin
+		if (h_s2 > 12'd200 && h_s2 == hdmi_height_candidate) begin
+			if (hdmi_height_timer < 25'd25_000_000) begin
+				hdmi_height_timer <= hdmi_height_timer + 1'd1;
+			end else begin
+				stable_height_reg <= hdmi_height_candidate;
+			end
+		end else begin
+			hdmi_height_candidate <= h_s2;
+			hdmi_height_timer <= 0;
+			stable_height_reg <= 0;
+		end
+	end
+end
+
+reg hz_s1 = 0, hz_s2 = 0;
+reg osd_120hz_latched = 0;
+reg [24:0] hz_timer = 0;
+
+always @(posedge clk_50) begin
+	hz_s1 <= status[25];
+	hz_s2 <= hz_s1;
+
+	if (hz_s1 == hz_s2) begin
+		if (hz_s2 != osd_120hz_latched) begin
+			if (hz_timer < 25'd25_000_000) hz_timer <= hz_timer + 1'd1;
+			else begin osd_120hz_latched <= hz_s2; hz_timer <= 0; end
+		end else hz_timer <= 0;
+	end
+end
+
+wire is_120hz_changing = (hz_s2 != osd_120hz_latched) || (hz_timer > 0);
+wire [11:0] STABLE_HEIGHT = is_120hz_changing ? 12'd0 : stable_height_reg;
+wire STABLE_120HZ = osd_120hz_latched & (STABLE_HEIGHT == 12'd720);
+
+// Profile encoding matches vfb_profile_resolver: 0=Off .. 7=Custom2.
+// The OSD lists the useful ones first, so rotate onto that encoding.
+wire [2:0] crt_profile_sel = status[28:26];
+wire [2:0] crt_profile =
+	(crt_profile_sel == 3'd0) ? 3'd2 :   // 80s Cruise Control
+	(crt_profile_sel == 3'd1) ? 3'd3 :   // 80s Overdrive
+	(crt_profile_sel == 3'd2) ? 3'd4 :   // Neon Fever Dream
+	(crt_profile_sel == 3'd3) ? 3'd6 :   // Custom 1
+	(crt_profile_sel == 3'd4) ? 3'd7 :   // Custom 2
+	(crt_profile_sel == 3'd5) ? 3'd0 :   // Off
+	                            3'd1;    // A Touch of CRT
+
+wire crt_profile_off = (crt_profile == 3'd0);
+
+wire [2:0] effective_dot_mode;
+wire [1:0] effective_tonemapping;
+wire [2:0] effective_bloom_width;
+wire [2:0] effective_bloom_curve;
+wire [2:0] effective_halo_filter;
+wire [1:0] effective_halo_spread;
+wire [1:0] effective_phosphor_mode;
+wire       effective_color_space;
+wire [2:0] effective_color_channels;
+wire       effective_slot_mask;
+wire       effective_full_bypass;
+
+reg [11:0] fb_width  = 12'd640;
+reg [11:0] fb_height = 12'd480;
+reg [11:0] x_center  = 12'd320;
+reg [11:0] y_center  = 12'd237;
+reg [12:0] auto_arx  = 13'h1000 | 13'd640;
+reg [12:0] auto_ary  = 13'h1000 | 13'd480;
+
+vfb_profile_resolver crt_profiles (
+	.profile(crt_profile),
+	.fb_height(fb_height),
+	.off_dot_mode({1'b0, status[30:29]}),
+	.off_tonemapping(2'd0),
+	.off_phosphor_mode(status[32:31]),
+	.custom1_settings(23'd0),
+	.custom2_settings(23'd0),
+	.dot_mode(effective_dot_mode),
+	.tonemapping(effective_tonemapping),
+	.bloom_width(effective_bloom_width),
+	.bloom_curve(effective_bloom_curve),
+	.halo_filter(effective_halo_filter),
+	.halo_spread(effective_halo_spread),
+	.phosphor_mode(effective_phosphor_mode),
+	.color_space(effective_color_space),
+	.color_channels(effective_color_channels),
+	.slot_mask(effective_slot_mask),
+	.full_bypass(effective_full_bypass)
+);
+
+reg [11:0] h_total_reg  = 12'd992;
+reg [11:0] v_total_reg  = 12'd524;
+reg [11:0] hs_start_reg = 12'd720;
+reg [11:0] hs_end_reg   = 12'd816;
+reg [11:0] vs_start_reg = 12'd490;
+reg [11:0] vs_end_reg   = 12'd492;
+
+reg is_1080p = 1'b0;
+reg is_480p  = 1'b1;
+reg is_240p  = 1'b0;
+
+reg signed [11:0] x_scaled;
+reg signed [11:0] y_scaled;
+wire signed [21:0] avg_x_ext = $signed(avg_x);
+wire signed [21:0] avg_y_ext = $signed(avg_y);
+
+reg [11:0] stable_height_meta = 12'd480;
+reg osd_120hz_meta;
+reg osd_120hz_vid = 0;
+reg fb_reset_vid = 1'b0;
+
+reg [11:0] fb_width_next, fb_height_next, x_center_next, y_center_next;
+reg [12:0] auto_arx_next, auto_ary_next;
+reg [11:0] h_total_next, v_total_next, hs_start_next, hs_end_next, vs_start_next, vs_end_next;
+reg is_1080p_next, is_480p_next, is_240p_next;
+reg [11:0] band_recip_next;
+reg [11:0] band_recip = 12'd1092;
+
+always @(*) begin
+	is_1080p_next = (stable_height_meta >= 12'd1080 && stable_height_meta < 12'd1400);
+	is_480p_next  = (stable_height_meta >= 12'd480  && stable_height_meta < 12'd720);
+	is_240p_next  = (stable_height_meta != 12'd0    && stable_height_meta < 12'd480);
+
+	if (is_1080p_next) begin
+		fb_width_next = 12'd1472; fb_height_next = 12'd1080;
+		x_center_next = 12'd736;  y_center_next  = 12'd525;
+		auto_arx_next = 13'h1000 | 13'd1472;
+		auto_ary_next = 13'h1000 | 13'd1080;
+		h_total_next  = 12'd1851; v_total_next  = 12'd1124;
+		hs_start_next = 12'd1600; hs_end_next   = 12'd1688;
+		vs_start_next = 12'd1088; vs_end_next   = 12'd1093;
+		band_recip_next = 12'd485;   // 65536/135
+	end else if (is_240p_next) begin
+		fb_width_next = 12'd640;  fb_height_next = 12'd240;
+		x_center_next = 12'd320;  y_center_next  = 12'd119;
+		auto_arx_next = 13'h1000 | 13'd640;
+		auto_ary_next = 13'h1000 | 13'd240;
+		h_total_next  = 12'd993;  v_total_next  = 12'd261;
+		hs_start_next = 12'd720;  hs_end_next   = 12'd816;
+		vs_start_next = 12'd245;  vs_end_next   = 12'd248;
+		band_recip_next = 12'd2185;  // 65536/30
+	end else if (is_480p_next) begin
+		fb_width_next = 12'd640;  fb_height_next = 12'd480;
+		x_center_next = 12'd320;  y_center_next  = 12'd237;
+		auto_arx_next = 13'h1000 | 13'd640;
+		auto_ary_next = 13'h1000 | 13'd480;
+		h_total_next  = 12'd992;  v_total_next  = 12'd524;
+		hs_start_next = 12'd720;  hs_end_next   = 12'd816;
+		vs_start_next = 12'd490;  vs_end_next   = 12'd492;
+		band_recip_next = 12'd1092;  // 65536/60
+	end else begin
+		fb_width_next = 12'd980;  fb_height_next = 12'd720;
+		x_center_next = 12'd490;  y_center_next  = 12'd350;
+		auto_arx_next = (stable_height_meta >= 12'd1440) ? (13'h1000 | 13'd1960) : (13'h1000 | 13'd980);
+		auto_ary_next = (stable_height_meta >= 12'd1440) ? (13'h1000 | 13'd1440) : (13'h1000 | 13'd720);
+		h_total_next  = 12'd1388; v_total_next  = 12'd749;
+		hs_start_next = 12'd1108; hs_end_next   = 12'd1196;
+		vs_start_next = 12'd728;  vs_end_next   = 12'd733;
+		band_recip_next = 12'd728;   // 65536/90
+	end
+end
+
+always @(posedge clk_125) begin
+	stable_height_meta <= STABLE_HEIGHT;
+	osd_120hz_meta     <= STABLE_120HZ;
+	osd_120hz_vid      <= osd_120hz_meta;
+
+	if (stable_height_meta == 12'd0) begin
+		fb_reset_vid <= 1'b1;
+	end else begin
+		fb_reset_vid <= 1'b0;
+		fb_width  <= fb_width_next;  fb_height <= fb_height_next;
+		x_center  <= x_center_next;  y_center  <= y_center_next;
+		auto_arx  <= auto_arx_next;  auto_ary  <= auto_ary_next;
+		h_total_reg  <= h_total_next;  v_total_reg  <= v_total_next;
+		hs_start_reg <= hs_start_next; hs_end_reg   <= hs_end_next;
+		vs_start_reg <= vs_start_next; vs_end_reg   <= vs_end_next;
+		is_1080p <= is_1080p_next; is_480p <= is_480p_next; is_240p <= is_240p_next;
+		band_recip <= band_recip_next;
+	end
+end
+
+wire [1:0] ar = status[15:14];
+assign VIDEO_ARX = (ar == 2'd0) ? auto_arx : (ar == 2'd1) ? 13'd0 : (13'h1000 | fb_width);
+assign VIDEO_ARY = (ar == 2'd0) ? auto_ary : (ar == 2'd1) ? 13'd0 : (13'h1000 | fb_height);
+
+//
+// AVG coordinate scaling.
+//
+// STARTING POINT ONLY -- these constants are inherited from Black Widow and
+// have not yet been measured against Battlezone's actual visible extent
+// (HANDOFF.md open question 2). Expect to retune after looking at hardware.
+//
+always @(*) begin
+	if (is_1080p) begin
+		x_scaled = (avg_x_ext * 22'sd49) >>> 9;
+		y_scaled = (avg_y_ext * 22'sd39) >>> 9;
+	end else if (is_240p) begin
+		x_scaled = (avg_x_ext * 22'sd43) >>> 10;
+		y_scaled = (avg_y_ext * 22'sd35) >>> 11;
+	end else if (is_480p) begin
+		x_scaled = (avg_x_ext * 22'sd43) >>> 10;
+		y_scaled = (avg_y_ext * 22'sd35) >>> 10;
+	end else begin
+		x_scaled = (avg_x_ext * 22'sd65) >>> 10;
+		y_scaled = (avg_y_ext * 22'sd13) >>> 8;
+	end
+end
+
+wire signed [11:0] new_x = $signed(x_center) + x_scaled;
+wire signed [11:0] new_y = $signed(y_center) - 12'sd1 - y_scaled;
+wire [10:0] final_x = new_x[10:0];
+wire [10:0] final_y = new_y[10:0];
+wire beam_in_bounds = (new_x[11:0] < (is_1080p ? 12'd1470 : fb_width)) &&
+                      (new_y[11:0] < fb_height);
+
+//
+// Battlezone, Red Baron and Bradley are all monochrome -- the colour came from
+// a mylar overlay, not the vector generator. The STAT colour bits are not
+// meaningful here, so drive the renderer white and apply the overlay after it.
+//
+wire [2:0] beam_rgb = 3'b111;
+wire raw_beam_on = |avg_z_raw;
+
+wire [7:0] final_z = avg_z_raw;
+
+// Dot scale: pick from the framebuffer size unless the profile overrides it.
+wire [2:0] auto_dot_mode = (fb_height >= 12'd1000) ? 3'd2 :
+                           (fb_height >= 12'd700)  ? 3'd1 : 3'd0;
+wire [2:0] actual_dot_mode = (effective_dot_mode == 3'd0) ? auto_dot_mode
+                                                          : (effective_dot_mode - 3'd1);
+
+reg [10:0] vfb_x_q, vfb_y_q;
+reg  [7:0] vfb_z_q;
+reg  [2:0] vfb_rgb_q;
+reg        vfb_is_dot_q, vfb_beam_on_q, vfb_frame_done_q;
+reg  [2:0] vfb_dot_mode_q;
+
+always @(posedge clk_12) begin
+	vfb_x_q          <= final_x;
+	vfb_y_q          <= final_y;
+	vfb_z_q          <= final_z;
+	vfb_rgb_q        <= beam_rgb;
+	vfb_is_dot_q     <= avg_is_dot;
+	vfb_beam_on_q    <= raw_beam_on && beam_in_bounds;
+	vfb_frame_done_q <= avg_halted;
+	vfb_dot_mode_q   <= actual_dot_mode;
+end
+
+/////////////////   VIDEO OUTPUT   ////////////////
+
+wire rst_vid = reset | fb_reset_vid;
+
+wire [11:0] pre_vblank_line = fb_height + 12'd2;
+reg  [2:0]  clk_div_cnt;
+reg         ce_pix;
+reg  [10:0] h_cnt, v_cnt;
+
+always @(posedge clk_125) begin
+	if (rst_vid)            ce_pix <= 1'b0;
+	else if (is_1080p)      ce_pix <= 1'b1;
+	else if (osd_120hz_vid) ce_pix <= 1'b1;
+	else if (is_240p)       ce_pix <= (clk_div_cnt[2:0] == 0);
+	else if (is_480p)       ce_pix <= (clk_div_cnt[1:0] == 0);
+	else                    ce_pix <= clk_div_cnt[0];
+end
+
+wire h_end = (h_cnt >= h_total_reg[10:0]);
+wire v_end = (v_cnt >= v_total_reg[10:0]);
+
+always @(posedge clk_125) begin
+	if (rst_vid) begin
+		clk_div_cnt <= 0;
+		h_cnt <= h_total_reg[10:0];
+		v_cnt <= pre_vblank_line[10:0];
+	end else begin
+		clk_div_cnt <= clk_div_cnt + 1'd1;
+		if (ce_pix) begin
+			if (h_end) begin
+				h_cnt <= 0;
+				v_cnt <= v_end ? 11'd0 : v_cnt + 1'd1;
+			end else h_cnt <= h_cnt + 1'd1;
+		end
+	end
+end
+
+wire raw_hsync  = ~(h_cnt >= hs_start_reg[10:0] && h_cnt < hs_end_reg[10:0]);
+wire raw_vsync  = ~(v_cnt >= vs_start_reg[10:0] && v_cnt < vs_end_reg[10:0]);
+wire raw_hblank = (h_cnt >= fb_width[10:0]);
+wire raw_vblank = (v_cnt >= fb_height[10:0]);
+
+wire hblank, vblank, hs, vs;
+wire [7:0] vfb_r, vfb_g, vfb_b;
+wire fifo_full_led;
+wire arbiter_reset_busy;
+
+wire [15:0] sdram_dq_out;
+wire        sdram_dq_oe;
+wire  [1:0] sdram_dqm;
+
+vfb_top rasterizer (
+	.reset(rst_vid),
+	.video_timing_reset(rst_vid),
+	.clk_sys(clk_125),
+	.clk_12(clk_12),
+
+	.osd_bloom_width(effective_bloom_width),
+	.osd_bloom_curve(effective_bloom_curve),
+	.osd_halo_filter(effective_halo_filter),
+	.osd_phosphor_mode(effective_phosphor_mode),
+	.osd_halo_spread(effective_halo_spread),
+	.osd_color_space(effective_color_space),
+	.osd_color_channels(effective_color_channels),
+	.osd_slot_mask(effective_slot_mask),
+	.osd_full_bypass(effective_full_bypass),
+	.arbiter_reset_busy(arbiter_reset_busy),
+
+	.X_VECTOR(vfb_x_q),
+	.Y_VECTOR(vfb_y_q),
+	.Z_VECTOR(vfb_z_q),
+	.RGB(vfb_rgb_q),
+	.IS_DOT(vfb_is_dot_q),
+	.BEAM_ON(vfb_beam_on_q),
+
+	.FRAME_DONE(vfb_frame_done_q),
+	.BUFFER_MODE(2'd0),
+	.DOT_MODE(vfb_dot_mode_q),
+	.FIFO_FULL_LED(fifo_full_led),
+	.FLASH_PARAM(8'd0),
+	.OSD_120HZ(STABLE_120HZ),
+
+	.DDRAM_CLK(DDRAM_CLK),
+	.DDRAM_BUSY(DDRAM_BUSY),
+	.DDRAM_BURSTCNT(DDRAM_BURSTCNT),
+	.DDRAM_ADDR(DDRAM_ADDR),
+	.DDRAM_DOUT(DDRAM_DOUT),
+	.DDRAM_DOUT_READY(DDRAM_DOUT_READY),
+	.DDRAM_RD(DDRAM_RD),
+	.DDRAM_DIN(DDRAM_DIN),
+	.DDRAM_BE(DDRAM_BE),
+	.DDRAM_WE(DDRAM_WE),
+
+	.SDRAM_DQ_IN(SDRAM_DQ),
+	.SDRAM_DQ_OUT(sdram_dq_out),
+	.SDRAM_DQ_OE(sdram_dq_oe),
+	.SDRAM_CKE(SDRAM_CKE),
+	.SDRAM_nCS(SDRAM_nCS),
+	.SDRAM_nRAS(SDRAM_nRAS),
+	.SDRAM_nCAS(SDRAM_nCAS),
+	.SDRAM_nWE(SDRAM_nWE),
+	.SDRAM_DQM(sdram_dqm),
+	.SDRAM_A(SDRAM_A),
+	.SDRAM_BA(SDRAM_BA),
+
+	.RENDER_WIDTH(fb_width),
+	.RENDER_HEIGHT(fb_height),
+
+	.VGA_R(vfb_r),
+	.VGA_G(vfb_g),
+	.VGA_B(vfb_b),
+	.VGA_HS(hs),
+	.VGA_VS(vs),
+	.VGA_HBLANK(hblank),
+	.VGA_VBLANK(vblank),
+
+	.h_cnt(h_cnt),
+	.v_cnt(v_cnt),
+	.ce_pix(ce_pix),
+	.hsync(raw_hsync),
+	.vsync(raw_vsync),
+	.hblank(raw_hblank),
+	.vblank(raw_vblank)
+);
+
+//
+// Mylar overlay.
+//
+// The cabinet had a red band across the top of the screen fading into green
+// below. The old framebuffer did this as a hard switch at scanline 120 of 480
+// with no blend; do it proportionally against the current framebuffer height
+// with a gradient band so it does not cut a visible line across the image.
+//
+// band_recip is a per-mode constant so the blend is a multiply and a shift --
+// a real divider here would sit on the pixel path at 125 MHz.
+//   band spans fb_height/8 .. fb_height/4, so band_len = fb_height/8
+//   band_recip = 65536 / band_len, and blend = (row-top)*recip >> 8
+//
+wire [11:0] band_top = fb_height >> 3;
+
+wire [11:0] row = {1'b0, v_cnt};
+wire in_band = (row >= band_top) && (row < (fb_height >> 2));
+wire above   = (row < band_top);
+
+wire [19:0] blend_full = (row - band_top) * band_recip;
+wire [7:0]  blend_raw  = blend_full[15:8];
+wire [7:0]  blend      = above  ? 8'd0   :
+                         in_band ? blend_raw : 8'd255;
+
+wire [15:0] lum_r = vfb_r * (8'd255 - blend);
+wire [15:0] lum_g = vfb_g * blend;
+
+wire overlay_on = mod_is_battlezone & ~status[20];
+
+assign VGA_R = overlay_on ? lum_r[15:8] : vfb_r;
+assign VGA_G = overlay_on ? lum_g[15:8] : vfb_g;
+assign VGA_B = overlay_on ? 8'd0        : vfb_b;
+
+assign VGA_HS = hs;
+assign VGA_VS = vs;
+assign VGA_DE = ~(hblank | vblank);
+assign VGA_SL = 0;
+assign CE_PIXEL = ce_pix;
 
 endmodule
