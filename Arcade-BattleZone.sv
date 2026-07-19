@@ -886,10 +886,38 @@ vfb_top rasterizer (
 //   band spans fb_height/8 .. fb_height/4, so band_len = fb_height/8
 //   band_recip = 65536 / band_len, and blend = (row-top)*recip >> 8
 //
+//
+// Display-space pixel coordinates.
+//
+// vfb_top's readout is pipelined, so its VGA output lags the raw h_cnt/v_cnt
+// by a substantial and mode-dependent amount (measured at roughly 92 pixels
+// and 50 lines at 720p). Anything drawn against the raw counters lands in the
+// wrong place, so derive real display coordinates from the renderer's own
+// blanking edges and use those for the overlay and the diagnostics.
+//
+reg [10:0] disp_x, disp_y;
+reg        hblank_prev, vblank_prev;
+
+always @(posedge clk_125) begin
+	if (rst_vid) begin
+		disp_x <= 0; disp_y <= 0;
+		hblank_prev <= 1'b1; vblank_prev <= 1'b1;
+	end else if (ce_pix) begin
+		hblank_prev <= hblank;
+		vblank_prev <= vblank;
+
+		if (hblank) disp_x <= 0;
+		else        disp_x <= disp_x + 1'd1;
+
+		if (vblank)                     disp_y <= 0;
+		else if (hblank & ~hblank_prev) disp_y <= disp_y + 1'd1;
+	end
+end
+
 // The blend depends only on the scanline, so it is pipelined freely -- two
 // cycles of latency on a per-line value is invisible. Doing this
-// combinationally put a subtract and two chained multiplies between v_cnt and
-// the output pins, which cost ~7.5 ns of setup slack at 125 MHz.
+// combinationally put a subtract and two chained multiplies between the row
+// counter and the output pins, which cost ~7.5 ns of setup slack at 125 MHz.
 wire [11:0] band_top = fb_height >> 3;
 wire        overlay_on = mod_is_battlezone & ~status[20];
 
@@ -899,7 +927,7 @@ reg [7:0]  blend_r;
 reg        above_r, in_band_r;
 
 always @(posedge clk_125) begin
-	row_r        <= {1'b0, v_cnt};
+	row_r        <= {1'b0, disp_y};
 	above_r      <= (row_r < band_top);
 	in_band_r    <= (row_r >= band_top) && (row_r < (fb_height >> 2));
 	blend_full_r <= (row_r - band_top) * band_recip;
@@ -946,14 +974,21 @@ always @(posedge clk_12) begin
 	end
 end
 
-wire [7:0] dbg_bits = {dbg_beam, dbg_z_nz, dbg_avg_ran, dbg_saw_vggo,
-                       dbg_cpu_rom, dbg_cpu_move, dbg_vecrom_wr, dbg_prom_wr};
+// Cells 0..3 are a fixed 1,0,1,0 marker so the readout is self-identifying --
+// the first attempt drew against the raw counters, which are offset from the
+// displayed pixel by the renderer's pipeline depth, and the mapping from cell
+// position to bit was ambiguous as a result.
+wire [15:0] dbg_bits = {
+	4'b0000,
+	dbg_beam, dbg_z_nz, dbg_avg_ran, dbg_saw_vggo,
+	dbg_cpu_rom, dbg_cpu_move, dbg_vecrom_wr, dbg_prom_wr,
+	4'b1010
+};
 
-// Squares of 24px, 8px apart, on rows 8..32.
-wire        dbg_row   = (v_cnt >= 11'd8) && (v_cnt < 11'd32);
-wire [10:0] dbg_col   = h_cnt - 11'd8;
-wire        dbg_in    = dbg_row && (h_cnt >= 11'd8) && (dbg_col < 11'd256);
-wire  [2:0] dbg_idx   = dbg_col[7:5];
+wire        dbg_row   = (disp_y >= 11'd100) && (disp_y < 11'd140);
+wire [10:0] dbg_col   = disp_x - 11'd40;
+wire        dbg_in    = dbg_row && (disp_x >= 11'd40) && (dbg_col < 11'd512);
+wire  [3:0] dbg_idx   = dbg_col[8:5];
 wire        dbg_cell  = dbg_col[4:0] < 5'd24;
 wire        dbg_lit   = dbg_in && dbg_cell && dbg_bits[dbg_idx];
 wire        dbg_frame = dbg_in && dbg_cell && !dbg_bits[dbg_idx];
