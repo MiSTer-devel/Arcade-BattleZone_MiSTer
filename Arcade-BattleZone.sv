@@ -414,7 +414,8 @@ assign REDBARONBUTTONS = mod_is_redbaron ? {joy[4], joy[5], 6'b0} : 8'b0;
 
 ////////////////////   PAUSE   ////////////////////
 
-wire m_pause = joy[11];
+// J1 lists fire, Start 1P, Start 2P, Coin, Pause -> joy[4] .. joy[8].
+wire m_pause = joy[8];
 wire pause_cpu;
 wire [11:0] pause_rgb_unused;
 
@@ -880,30 +881,51 @@ vfb_top rasterizer (
 //   band spans fb_height/8 .. fb_height/4, so band_len = fb_height/8
 //   band_recip = 65536 / band_len, and blend = (row-top)*recip >> 8
 //
+// The blend depends only on the scanline, so it is pipelined freely -- two
+// cycles of latency on a per-line value is invisible. Doing this
+// combinationally put a subtract and two chained multiplies between v_cnt and
+// the output pins, which cost ~7.5 ns of setup slack at 125 MHz.
 wire [11:0] band_top = fb_height >> 3;
+wire        overlay_on = mod_is_battlezone & ~status[20];
 
-wire [11:0] row = {1'b0, v_cnt};
-wire in_band = (row >= band_top) && (row < (fb_height >> 2));
-wire above   = (row < band_top);
+reg [11:0] row_r;
+reg [19:0] blend_full_r;
+reg [7:0]  blend_r;
+reg        above_r, in_band_r;
 
-wire [19:0] blend_full = (row - band_top) * band_recip;
-wire [7:0]  blend_raw  = blend_full[15:8];
-wire [7:0]  blend      = above  ? 8'd0   :
-                         in_band ? blend_raw : 8'd255;
+always @(posedge clk_125) begin
+	row_r        <= {1'b0, v_cnt};
+	above_r      <= (row_r < band_top);
+	in_band_r    <= (row_r >= band_top) && (row_r < (fb_height >> 2));
+	blend_full_r <= (row_r - band_top) * band_recip;
+	blend_r      <= above_r ? 8'd0 : (in_band_r ? blend_full_r[15:8] : 8'd255);
+end
 
-wire [15:0] lum_r = vfb_r * (8'd255 - blend);
-wire [15:0] lum_g = vfb_g * blend;
+wire [15:0] lum_r = vfb_r * (8'd255 - blend_r);
+wire [15:0] lum_g = vfb_g * blend_r;
 
-wire overlay_on = mod_is_battlezone & ~status[20];
+// One registered stage on the whole output bundle, CE_PIXEL included, so the
+// stream stays aligned rather than shifting RGB against the pixel enable.
+reg  [7:0] r_d, g_d, b_d;
+reg        hs_d, vs_d, de_d, ce_pix_d;
 
-assign VGA_R = overlay_on ? lum_r[15:8] : vfb_r;
-assign VGA_G = overlay_on ? lum_g[15:8] : vfb_g;
-assign VGA_B = overlay_on ? 8'd0        : vfb_b;
+always @(posedge clk_125) begin
+	r_d      <= overlay_on ? lum_r[15:8] : vfb_r;
+	g_d      <= overlay_on ? lum_g[15:8] : vfb_g;
+	b_d      <= overlay_on ? 8'd0        : vfb_b;
+	hs_d     <= hs;
+	vs_d     <= vs;
+	de_d     <= ~(hblank | vblank);
+	ce_pix_d <= ce_pix;
+end
 
-assign VGA_HS = hs;
-assign VGA_VS = vs;
-assign VGA_DE = ~(hblank | vblank);
-assign VGA_SL = 0;
-assign CE_PIXEL = ce_pix;
+assign VGA_R    = r_d;
+assign VGA_G    = g_d;
+assign VGA_B    = b_d;
+assign VGA_HS   = hs_d;
+assign VGA_VS   = vs_d;
+assign VGA_DE   = de_d;
+assign VGA_SL   = 0;
+assign CE_PIXEL = ce_pix_d;
 
 endmodule
