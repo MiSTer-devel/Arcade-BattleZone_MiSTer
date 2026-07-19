@@ -415,3 +415,19 @@ If Phase 1 completes as planned:
 
 Retained essentially unchanged: the entire analog sound section, `rtl/mathbox.sv`,
 `rtl/POKEY.sv` (pending Phase 6).
+
+---
+
+## Known timing status at hand-off
+
+`-0.648 ns` worst setup on the 125 MHz domain (TNS `-20.3`), at the slow
+1100 mV / 85 C corner. Every failing path is inside `vfb_filter`'s bloom
+filter -- ROM output into the shift-tap RAM -- i.e. inside the ported renderer,
+not in this core's logic. Black Widow ships the same module with the same
+aggressive fitter settings. The design has been observed working correctly on
+hardware at this slack.
+
+Not chased further because it is third-party IP and each fitter iteration is
+~25 minutes of wall clock. If it matters before a release, the cheap things to
+try in order: a fitter `SEED` sweep, then raising the bloom filter's internal
+pipelining.
