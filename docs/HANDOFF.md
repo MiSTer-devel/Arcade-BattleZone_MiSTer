@@ -19,10 +19,9 @@ real MiSTer at 720p: Battlezone (green vectors, red score band, phosphor glow, b
 Red Baron and Bradley Trainer (monochrome white, no overlay).
 
 **Fit:** 87% ALMs, 36% block memory, 63% DSP, 3 PLLs.
-**Timing:** −0.734 ns worst setup on the 125 MHz domain. The residual paths are in the
-framework's `ascal` scaler and Videodr0me's bloom filter, not in this core's logic.
-Everything else has positive slack (clk_12 has +62 ns). Worth another look before
-release, but no core logic is on the failing paths.
+**Timing:** −0.648 ns worst setup on the 125 MHz domain, entirely inside the ported
+renderer's bloom filter. Everything else has positive slack (clk_12 has +62 ns). See
+"Known timing status at hand-off" at the end of this document.
 
 ### Bugs found during bring-up, and what caused them
 
